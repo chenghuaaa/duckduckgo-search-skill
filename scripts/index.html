@@ -3,12 +3,15 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Web Search</title>
+    <title>Web Search & Local Notes</title>
   </head>
   <body>
     <script>
       // Public SearXNG instances pool
+      // Prioritizing verified CORS-enabled instances
       const SEARX_INSTANCES = [
+        "https://search.rhscz.eu",
+        "https://searx.rhscz.eu",
         "https://opnxng.com",
         "https://searx.be",
         "https://searx.mxchange.org",
@@ -38,20 +41,20 @@
         return text;
       }
 
-      // Helper function to clean search query of conversational stop words
+      // Safe query cleaning function - removes conversational prefixes and suffixes
+      // without damaging middle words (e.g. keeps "อาหาร" instead of mangling it to "อร")
       function cleanQuery(query) {
-        const stopWords = [
-          "วันนี้", "มี", "ไหม", "หรือไม่", "บ้าง", "ตอนไหน", "คู่ไหน", "เตะกันไหม", "เตะ", "กัน",
-          "คืออะไร", "คือ", "อะไร", "ที่ไหน", "เมื่อไหร่", "อย่างไร", "ทำไม", "ใคร", "แนะนำ", "สอน",
-          "หาสถานที่", "ท่องเที่ยว", "เที่ยว", "ใหม่", "ๆ", "ใน", "หน่อย", "ข่าวด่วน", "ข่าว", "ล่าสุด",
-          "ค้นหา", "สืบค้น", "หา", "กรุณา", "ช่วย",
-          "who is", "what is", "where is", "when is", "how to", "why did", "search for", "find", "please"
-        ];
+        if (!query) return '';
+        let cleaned = query.trim();
         
-        let cleaned = query.toLowerCase();
-        stopWords.forEach(word => {
-          cleaned = cleaned.replace(new RegExp(word, 'g'), '');
-        });
+        // Remove question marks and common punctuation
+        cleaned = cleaned.replace(/[?？!！.,，_]/g, '');
+        
+        // Remove common Thai polite particles and question words at the end
+        cleaned = cleaned.replace(/(ครับ|ค่ะ|คะ|นะคราบ|นะค้าบ|นะ|หน่อย|บ้าง|ไหม|หรือไม่|ครับผม|แน่|จริง|หรือเปล่า|หรือยัง)$/g, '');
+        
+        // Remove search prefix verbs
+        cleaned = cleaned.replace(/^(ช่วยค้นหา|ช่วยหา|ค้นหา|หาข้อมูล|หา|อยากรู้ว่า|บอกหน่อยว่า|สืบค้น|ขอข้อมูล)\s*/g, '');
         
         return cleaned.replace(/\s+/g, ' ').trim();
       }
@@ -83,36 +86,49 @@
       async function fallbackWikipediaSearch(query) {
         const isThai = /[\u0E00-\u0E7F]/.test(query);
         const cleaned = cleanQuery(query) || query;
-        try {
-          const lang = isThai ? 'th' : 'en';
-          const searchUrl = `https://${lang}.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(cleaned)}&utf8=&format=json&origin=*`;
-          const searchResponse = await fetch(searchUrl);
-          
-          if (searchResponse.ok) {
-            const searchData = await searchResponse.json();
-            if (searchData.query && searchData.query.search && searchData.query.search.length > 0) {
-              const title = searchData.query.search[0].title;
-              
-              // Fetch summary of the first Wikipedia result
-              const summaryUrl = `https://${lang}.wikipedia.org/w/api.php?action=query&prop=extracts&exintro=&explaintext=&titles=${encodeURIComponent(title)}&format=json&origin=*`;
-              const summaryResponse = await fetch(summaryUrl);
-              
-              if (summaryResponse.ok) {
-                const summaryData = await summaryResponse.json();
-                const pages = summaryData.query.pages;
-                const pageId = Object.keys(pages)[0];
-                const extract = pages[pageId].extract;
+        const lang = isThai ? 'th' : 'en';
+        
+        // Try search terms in order of specificity to ensure we get a response
+        const searchTerms = [cleaned];
+        const parts = cleaned.split(/\s+/).filter(p => p.length > 0);
+        if (parts.length > 1) {
+          // Fallback to the last word (likely the main entity or location)
+          searchTerms.push(parts[parts.length - 1]);
+          // Fallback to first and last word combined
+          searchTerms.push(`${parts[0]} ${parts[parts.length - 1]}`);
+        }
+        
+        for (const term of searchTerms) {
+          try {
+            const searchUrl = `https://${lang}.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(term)}&utf8=&format=json&origin=*`;
+            const searchResponse = await fetch(searchUrl);
+            
+            if (searchResponse.ok) {
+              const searchData = await searchResponse.json();
+              if (searchData.query && searchData.query.search && searchData.query.search.length > 0) {
+                const title = searchData.query.search[0].title;
                 
-                if (extract) {
-                  return `[ผลลัพธ์สำรองจาก Wikipedia: ${title}]\n${extract}`;
+                // Fetch summary of the Wikipedia result
+                const summaryUrl = `https://${lang}.wikipedia.org/w/api.php?action=query&prop=extracts&exintro=&explaintext=&titles=${encodeURIComponent(title)}&format=json&origin=*`;
+                const summaryResponse = await fetch(summaryUrl);
+                
+                if (summaryResponse.ok) {
+                  const summaryData = await summaryResponse.json();
+                  const pages = summaryData.query.pages;
+                  const pageId = Object.keys(pages)[0];
+                  const extract = pages[pageId].extract;
+                  
+                  if (extract) {
+                    return `[ผลลัพธ์สำรองจาก Wikipedia: ${title}]\n${extract}`;
+                  }
                 }
               }
             }
+          } catch (wikiError) {
+            console.warn(`Wikipedia fallback failed for term "${term}":`, wikiError);
           }
-        } catch (wikiError) {
-          console.warn("Wikipedia fallback failed:", wikiError);
         }
-        return 'ไม่พบข้อมูลที่แน่ชัดจากการค้นหาผ่านเครือข่าย กรุณาลองเปลี่ยนคำค้นหา';
+        return 'ไม่พบข้อมูลที่แน่ชัดจากการค้นหาผ่านเครือข่าย กรุณาลองเปลี่ยนคำค้นหาให้กระชับขึ้น';
       }
 
       /**
@@ -162,19 +178,26 @@
             if (response.ok) {
               const json = await response.json();
               if (json && json.results && json.results.length > 0) {
+                // Slice to top 3 results to prevent LLM repetition loops
+                const resultsToUse = json.results.slice(0, 3);
+                
                 let formattedResult = `[ผลการค้นหาจากเครือข่ายสำหรับ: ${searchQuery}]\n\n`;
-                json.results.slice(0, 5).forEach((item, index) => {
-                  formattedResult += `${index + 1}. ${item.title}\n`;
-                  formattedResult += `   Link: ${item.url}\n`;
-                  if (item.content) {
-                    formattedResult += `   รายละเอียด: ${item.content}\n`;
+                for (let idx = 0; idx < resultsToUse.length; idx++) {
+                  const item = resultsToUse[idx];
+                  let title = item.title || '';
+                  let content = item.content || '';
+                  
+                  // Translate title and content individually to avoid HTTP 414 long URLs
+                  if (shouldTranslateBack && isThai) {
+                    title = await translateText(title, 'en', 'th');
+                    content = await translateText(content, 'en', 'th');
+                  }
+                  
+                  formattedResult += `${idx + 1}. หัวข้อ: ${title}\n`;
+                  if (content) {
+                    formattedResult += `   รายละเอียด: ${content}\n`;
                   }
                   formattedResult += '\n';
-                });
-                
-                // Translate the results back to Thai if we translated the query to English
-                if (shouldTranslateBack && isThai) {
-                  return await translateText(formattedResult, 'en', 'th');
                 }
                 return formattedResult;
               }
@@ -188,14 +211,97 @@
         return await fallbackWikipediaSearch(query);
       }
 
+      // Local Notes Functions using localStorage
+      function saveNote(text) {
+        try {
+          const notes = JSON.parse(localStorage.getItem('gemma_notes') || '[]');
+          const newNote = {
+            id: Date.now().toString(),
+            text: text,
+            date: new Date().toLocaleString('th-TH')
+          };
+          notes.push(newNote);
+          localStorage.setItem('gemma_notes', JSON.stringify(notes));
+          return `บันทึกโน้ตสำเร็จแล้ว: "${text}"`;
+        } catch (e) {
+          return `เกิดข้อผิดพลาดในการบันทึกโน้ต: ${e.message}`;
+        }
+      }
+
+      // Read notes from localStorage
+      function readNotes(query) {
+        try {
+          const notes = JSON.parse(localStorage.getItem('gemma_notes') || '[]');
+          if (notes.length === 0) {
+            return 'ไม่มีโน้ตที่บันทึกไว้ในขณะนี้';
+          }
+          
+          let filtered = notes;
+          if (query) {
+            const q = query.toLowerCase();
+            filtered = notes.filter(n => n.text.toLowerCase().includes(q));
+          }
+          
+          if (filtered.length === 0) {
+            return `ไม่พบโน้ตที่เกี่ยวข้องกับ "${query}"`;
+          }
+          
+          let result = '[โน้ตที่บันทึกไว้ทั้งหมด]\n';
+          filtered.forEach((n, idx) => {
+            result += `${idx + 1}. [${n.date}] ${n.text}\n`;
+          });
+          return result;
+        } catch (e) {
+          return `เกิดข้อผิดพลาดในการอ่านโน้ต: ${e.message}`;
+        }
+      }
+
+      function deleteNote(query) {
+        try {
+          const notes = JSON.parse(localStorage.getItem('gemma_notes') || '[]');
+          if (notes.length === 0) {
+            return 'ไม่มีโน้ตที่จะลบ';
+          }
+          
+          const q = query.toLowerCase();
+          const initialLength = notes.length;
+          const filtered = notes.filter(n => !n.text.toLowerCase().includes(q));
+          
+          if (filtered.length === initialLength) {
+            return `ไม่พบโน้ตที่ตรงกับ "${query}" เพื่อทำการลบ`;
+          }
+          
+          localStorage.setItem('gemma_notes', JSON.stringify(filtered));
+          return `ลบโน้ตที่เกี่ยวข้องกับ "${query}" สำเร็จแล้ว`;
+        } catch (e) {
+          return `เกิดข้อผิดพลาดในการลบโน้ต: ${e.message}`;
+        }
+      }
+
       window["ai_edge_gallery_get_result"] = async (data) => {
         try {
           const jsonData = JSON.parse(data);
-          if (!jsonData.query) {
-            return JSON.stringify({ error: "ไม่มีคำค้นหาระบุไว้ (No query provided)" });
+          
+          // Backwards compatibility for older calls
+          if (!jsonData.type && jsonData.query) {
+            jsonData.type = 'search';
           }
-          const searchResult = await runSearch(jsonData.query);
-          return JSON.stringify({ result: searchResult });
+          
+          if (jsonData.type === 'search') {
+            const searchResult = await runSearch(jsonData.query);
+            return JSON.stringify({ result: searchResult });
+          } else if (jsonData.type === 'note_save') {
+            const result = saveNote(jsonData.text);
+            return JSON.stringify({ result: result });
+          } else if (jsonData.type === 'note_read') {
+            const result = readNotes(jsonData.query);
+            return JSON.stringify({ result: result });
+          } else if (jsonData.type === 'note_delete') {
+            const result = deleteNote(jsonData.query);
+            return JSON.stringify({ result: result });
+          } else {
+            return JSON.stringify({ error: "ไม่รองรับการทำงานประเภทนี้ (Operation not supported)" });
+          }
         } catch (e) {
           console.error(e);
           return JSON.stringify({ error: `Failed to query: ${e.message}` });
