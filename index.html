@@ -17,11 +17,34 @@
         "https://searxng.site"
       ];
 
+      // Helper function to translate text using the free Google Translate endpoint
+      async function translateText(text, fromLang, toLang) {
+        if (!text || text.trim() === '') return '';
+        try {
+          const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${fromLang}&tl=${toLang}&dt=t&q=${encodeURIComponent(text)}`;
+          const response = await fetch(url);
+          if (!response.ok) return text;
+          const json = await response.json();
+          if (json && json[0]) {
+            let result = '';
+            json[0].forEach(item => {
+              if (item[0]) result += item[0];
+            });
+            return result;
+          }
+        } catch (e) {
+          console.error("Translation error:", e);
+        }
+        return text;
+      }
+
       // Helper function to clean search query of conversational stop words
       function cleanQuery(query) {
         const stopWords = [
           "วันนี้", "มี", "ไหม", "หรือไม่", "บ้าง", "ตอนไหน", "คู่ไหน", "เตะกันไหม", "เตะ", "กัน",
           "คืออะไร", "คือ", "อะไร", "ที่ไหน", "เมื่อไหร่", "อย่างไร", "ทำไม", "ใคร", "แนะนำ", "สอน",
+          "หาสถานที่", "ท่องเที่ยว", "เที่ยว", "ใหม่", "ๆ", "ใน", "หน่อย", "ข่าวด่วน", "ข่าว", "ล่าสุด",
+          "ค้นหา", "สืบค้น", "หา", "กรุณา", "ช่วย",
           "who is", "what is", "where is", "when is", "how to", "why did", "search for", "find", "please"
         ];
         
@@ -52,8 +75,7 @@
           q = q.replace(/twitter|ทวิตเตอร์|x/g, '');
         }
         
-        // Clean query terms then append the site operator
-        const cleanedQuery = q.replace(/\s+/g, ' ').trim();
+        const cleanedQuery = cleanQuery(q) || q;
         return cleanedQuery + siteOp;
       }
 
@@ -94,12 +116,41 @@
       }
 
       /**
-       * Performs a search on SearXNG instances with site operators and fallback.
+       * Performs a search on SearXNG instances with site operators, translation, and fallback.
        * @param {string} query - The search query.
        */
       async function runSearch(query) {
-        const formattedQuery = formatQueryWithSiteOperators(query);
-        const encodedQuery = encodeURIComponent(formattedQuery);
+        const isThai = /[\u0E00-\u0E7F]/.test(query);
+        const hasSiteOp = query.toLowerCase().includes('facebook') || 
+                          query.toLowerCase().includes('เฟสบุ๊ค') ||
+                          query.toLowerCase().includes('เฟสบุค') ||
+                          query.toLowerCase().includes('tiktok') ||
+                          query.toLowerCase().includes('ติ๊กต๊อก') ||
+                          query.toLowerCase().includes('ติกตอก') ||
+                          query.toLowerCase().includes('instagram') ||
+                          query.toLowerCase().includes('อินสตาแกรม') ||
+                          query.toLowerCase().includes('ไอจี') ||
+                          query.toLowerCase().includes('ig') ||
+                          query.toLowerCase().includes('twitter') ||
+                          query.toLowerCase().includes('ทวิตเตอร์') ||
+                          query.toLowerCase().includes(' x ') ||
+                          query.toLowerCase().startsWith('x ') ||
+                          query.toLowerCase().endsWith(' x');
+
+        let searchQuery = formatQueryWithSiteOperators(query);
+        let shouldTranslateBack = false;
+
+        // Only translate to English if it is a general web search in Thai (no social media site scoping)
+        if (isThai && !hasSiteOp) {
+          const cleaned = cleanQuery(query) || query;
+          const englishQuery = await translateText(cleaned, 'th', 'en');
+          if (englishQuery && englishQuery.trim() !== '') {
+            searchQuery = englishQuery;
+            shouldTranslateBack = true;
+          }
+        }
+
+        const encodedQuery = encodeURIComponent(searchQuery);
         
         // Try each SearXNG instance sequentially
         for (let i = 0; i < SEARX_INSTANCES.length; i++) {
@@ -111,7 +162,7 @@
             if (response.ok) {
               const json = await response.json();
               if (json && json.results && json.results.length > 0) {
-                let formattedResult = `[ผลการค้นหาจากเครือข่าย: ${formattedQuery}]\n\n`;
+                let formattedResult = `[ผลการค้นหาจากเครือข่ายสำหรับ: ${searchQuery}]\n\n`;
                 json.results.slice(0, 5).forEach((item, index) => {
                   formattedResult += `${index + 1}. ${item.title}\n`;
                   formattedResult += `   Link: ${item.url}\n`;
@@ -120,6 +171,11 @@
                   }
                   formattedResult += '\n';
                 });
+                
+                // Translate the results back to Thai if we translated the query to English
+                if (shouldTranslateBack && isThai) {
+                  return await translateText(formattedResult, 'en', 'th');
+                }
                 return formattedResult;
               }
             }
