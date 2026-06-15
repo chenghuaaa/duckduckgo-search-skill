@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DuckDuckGo Search</title>
+  </head>
+  <body>
+    <script>
+      /**
+       * Performs a search on DuckDuckGo API and formats the result.
+       * @param {string} query - The search query keywords.
+       */
+      async function runSearch(query) {
+        const encodedQuery = encodeURIComponent(query);
+        const url = `https://api.duckduckgo.com/?q=${encodedQuery}&format=json&no_html=1&skip_disambig=1`;
+        
+        try {
+          const response = await fetch(url);
+          if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+          }
+          const json = await response.json();
+          
+          let result = '';
+          if (json.AbstractText) {
+            result += json.AbstractText + '\n';
+          }
+          if (json.RelatedTopics && json.RelatedTopics.length > 0) {
+            result += 'ข้อมูลเพิ่มเติม:\n';
+            json.RelatedTopics.slice(0, 3).forEach(topic => {
+              if (topic.text) result += `- ${topic.text}\n`;
+            });
+          }
+          
+          return result || 'ไม่พบข้อมูลที่แน่ชัด กรุณาลองเปลี่ยนคำค้นหา';
+        } catch (error) {
+          return `เกิดข้อผิดพลาดในการเชื่อมต่อเน็ต: ${error.message}`;
+        }
+      }
+
+      window["ai_edge_gallery_get_result"] = async (data) => {
+        try {
+          const jsonData = JSON.parse(data);
+          if (!jsonData.query) {
+            return JSON.stringify({ error: "ไม่มีคำค้นหาระบุไว้ (No query provided)" });
+          }
+          const searchResult = await runSearch(jsonData.query);
+          return JSON.stringify({ result: searchResult });
+        } catch (e) {
+          console.error(e);
+          return JSON.stringify({ error: `Failed to query DuckDuckGo: ${e.message}` });
+        }
+      };
+    </script>
+  </body>
+</html>
